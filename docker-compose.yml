@@ -1,10 +1,6 @@
-version: '3.8'
-
 services:
   scam-guardian:
     build: .
     container_name: scam-guardian
     volumes:
       - ./output:/app/output
-    # To run, execute: docker compose run --rm scam-guardian <target-url>
-    command: ["https://example.com"]

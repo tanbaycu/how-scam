@@ -1,74 +1,165 @@
-# scam-guardian (Automated Phishing Analysis & Takedown Sandbox)
+# scam-guardian
 
-**scam-guardian** là một công cụ tự động phân tích và phản ứng nhanh trước các trang web lừa đảo (phishing/scam) bằng ngôn ngữ **Go**, điều khiển trình duyệt ẩn danh (**Headless Chrome**). 
+Sandbox phân tích website lừa đảo tự động, viết bằng Go.
 
-> [!NOTE]
-> Đây là dự án được xây dựng trong quá trình học tập và nghiên cứu về chống tội phạm công nghệ cao, cụ thể là các hành vi lừa đảo trực tuyến (phishing) thu thập thông tin người dùng.
+> Dự án này được xây dựng trong quá trình học tập và nghiên cứu về phòng chống tội phạm công nghệ cao.
 
 ---
 
-## 🛠️ Phân tích Chi tiết Cơ chế Hoạt động
+## Vấn đề cần giải quyết
 
-Khi tội phạm mạng thiết lập các trang web lừa đảo, chúng thường triển khai nhiều kỹ thuật che giấu (như chặn User-Agent lạ, chỉ hiển thị form khi có tương tác người dùng, hoặc mã hóa mã nguồn JavaScript). Các script cào web thông thường (như Curl/Python requests) sẽ bị chặn hoặc không hiển thị được nội dung. **scam-guardian** giải quyết triệt để vấn đề này qua cơ chế sau:
+Mỗi ngày có hàng nghìn trang web giả mạo ngân hàng, ví điện tử, mạng xã hội được dựng lên để lừa đảo người dùng. Quy trình xử lý hiện tại phần lớn là **thủ công**: ai đó báo cáo link → người phân tích mở link → chụp ảnh → tra WHOIS → soạn email gửi nhà mạng yêu cầu gỡ. Quá trình này mất **hàng giờ đồng hồ** cho mỗi trang.
 
-```mermaid
-graph TD
-    Target[URL Nghi Ngờ] -->|Docker Sandbox| Chromedp[Headless Chrome Instance]
-    Chromedp -->|1. Render & Execute JS| DOM[Page Source & Forms]
-    Chromedp -->|2. Visual Snapshot| Screenshot[screenshot.png]
-    
-    DOM -->|3. Phân tích Dấu hiệu| Heuristic[Heuristic Detector]
-    Heuristic -->|Nhận diện Form OTP, Password, Card| RiskScore[Tính toán Risk Score]
-    
-    Target -->|4. Tra cứu WHOIS| Whois[Registry Database]
-    Whois -->|Lấy thông tin Nhà cung cấp & Abuse Email| Takedown[Takedown Engine]
-    
-    RiskScore -->|Kết hợp dữ liệu| Report[abuse_report.txt]
-    Takedown -->|Soạn thảo văn bản pháp lý| Report
-    
-    style Chromedp fill:#1e293b,stroke:#3b82f6,stroke-width:2px;
-    style Heuristic fill:#1e293b,stroke:#eab308,stroke-width:2px;
-    style Takedown fill:#1e293b,stroke:#ef4444,stroke-width:2px;
+**scam-guardian** rút gọn toàn bộ quy trình đó xuống còn **một lệnh duy nhất**.
+
+---
+
+## Hệ thống làm gì
+
+```
+URL nghi ngờ
+    │
+    ▼
+┌───────────────────────────────┐
+│  1. SANDBOX                   │
+│  Chrome headless cách ly      │
+│  Render JS, bắt network req   │
+│  Chụp ảnh toàn trang          │
+│  Lưu mã nguồn HTML            │
+└───────────┬───────────────────┘
+            │
+            ▼
+┌───────────────────────────────┐
+│  2. PHÂN TÍCH                 │
+│  Quét form: password/OTP/card │
+│  Bắt POST request → C2 EP    │
+│  Phát hiện anti-debug script  │
+│  Nhận diện brand bị giả mạo  │
+│  Tính Risk Score 0-100        │
+└───────────┬───────────────────┘
+            │
+            ▼
+┌───────────────────────────────┐
+│  3. RECONNAISSANCE            │
+│  SSL cert age & issuer check  │
+│  Typosquatting detection      │
+│  (Levenshtein + homoglyph)    │
+│  WHOIS → registrar + abuse    │
+└───────────┬───────────────────┘
+            │
+            ▼
+┌───────────────────────────────┐
+│  4. ĐẦU RA                   │
+│  screenshot.png               │
+│  page_source.html             │
+│  report.json (structured)     │
+│  abuse_report.txt (takedown)  │
+└───────────────────────────────┘
 ```
 
 ---
 
-## 🔍 Phân tích Cơ chế Từng Phần
+## Từng phần hoạt động như thế nào
 
-### 1. Trình duyệt Ẩn danh Cách ly (`main.go` - Chromedp Sandbox)
-*   **Cách thức:** Hệ thống khởi dựng một instance Chrome không giao diện (Headless) nằm hoàn toàn trong môi trường Docker cách ly (sandbox).
-*   **Bypass Detection:** Trình duyệt thực hiện truy cập trang web mục tiêu, thực thi toàn bộ mã nguồn JavaScript động, chờ trang web render xong trong 2 giây rồi mới bắt đầu bóc tách thông tin. Điều này giúp vượt qua các bộ lọc chống bot đơn giản của hacker.
-*   **Bằng chứng Số:** Tự động gọi lệnh chụp ảnh màn hình toàn trang (`chromedp.FullScreenshot`) để lưu lại giao diện lừa đảo làm bằng chứng pháp lý gửi cho nhà mạng.
+### Sandbox trình duyệt
 
-### 2. Bộ máy Phân tích Heuristic (`detector.go`)
-*   **Cơ chế:** Thay vì chỉ tìm các từ khóa tĩnh, hệ thống quét cấu trúc cây thư mục DOM của trang web để phát hiện:
-    *   **Form thu thập thông tin:** Tìm kiếm các thẻ `input` có thuộc tính nhạy cảm như mật khẩu (`password`), mã xác thực OTP (`otp`, `token`, `verification`), hay thẻ tín dụng (`card`, `cvv`, `ccnum`).
-    *   **Kỹ thuật tự bảo vệ của Hacker:** Quét các chuỗi script chặn nhấp chuột phải (`contextmenu`), chặn phím F12/Developer Tools (`devtools`, `debugger`, `preventdefault`) thường được hacker cài vào để ngăn người dùng thông thường xem mã nguồn hoặc phân tích trang.
-    *   **Thương hiệu bị nhắm tới:** Kiểm tra sự xuất hiện của các từ khóa thương hiệu lớn hay bị giả mạo (ví dụ: PayPal, MetaMask, Binance, các ngân hàng phổ biến).
-*   **Tính toán Điểm rủi ro:** Gán trọng số tương ứng cho từng dấu hiệu để cho ra điểm số rủi ro (`RiskScore`) từ 0 đến 100.
+Tại sao không dùng `curl` hay thư viện HTTP đơn giản? Vì các trang phishing hiện đại **render nội dung bằng JavaScript**. Form đăng nhập giả có thể không tồn tại trong mã HTML gốc — nó được inject động sau khi JS chạy xong. Một số trang còn kiểm tra User-Agent, viewport size, hoặc cookie trước khi hiển thị nội dung lừa đảo.
 
-### 3. Tra cứu Pháp lý & Takedown (`takedown.go`)
-*   **Cơ chế:** Trích xuất tên miền gốc (Domain) của URL lừa đảo, sau đó thực hiện truy vấn WHOIS trực tiếp tới các máy chủ Registry toàn cầu.
-*   **Trích xuất Abuse Contact:** Phân tích dữ liệu WHOIS trả về để tìm ra nhà cung cấp tên miền (Registrar) và Email tiếp nhận báo cáo lạm dụng (`Abuse Email`) của họ.
-*   **Soạn thảo Báo cáo Tự động:** Nếu trang web có mức độ rủi ro cao (Risk Score >= 40), hệ thống tự động sinh ra một email báo cáo triệt phá (Abuse Report) chuyên nghiệp bằng tiếng Anh chứa đầy đủ bằng chứng kỹ thuật, các lỗ hổng phát hiện được và yêu cầu nhà mạng khóa ngay lập tức trang web đó.
+scam-guardian giải quyết bằng cách khởi chạy một instance **Chromium thật** (không phải trình giả lập) trong container Docker cách ly. Trình duyệt này:
+
+- Chạy đầy đủ V8 engine, render DOM y như người dùng thật mở trang
+- Bật **CDP Network Domain** để nghe lén mọi HTTP request mà trang web gửi đi. Bất kỳ POST request nào hoặc request nào có chứa từ khóa `api` đều bị ghi nhận lại — đây thường là endpoint mà hacker dùng để nhận dữ liệu bị đánh cắp (gọi là **exfiltration endpoint** hay C2)
+- Chụp screenshot toàn trang làm bằng chứng số
+- Lưu toàn bộ HTML source sau khi JS đã chạy xong
+
+### Phát hiện dấu hiệu lừa đảo (Heuristic Engine)
+
+Sau khi có DOM hoàn chỉnh, hệ thống quét các dấu hiệu:
+
+**Form nhạy cảm:** Duyệt qua tất cả thẻ `<form>`, lấy danh sách các `<input>` bên trong. Nếu tên hoặc ID của input chứa các pattern như `pass`, `otp`, `cvv`, `cccd`, `ssn` — đó là form thu thập thông tin nhạy cảm. Mỗi loại được gán một mức điểm rủi ro khác nhau (password: +40, card: +30, OTP: +30, PII: +25).
+
+**Kỹ thuật trốn tránh của hacker:** Nhiều trang phishing cài JavaScript để chặn nhấp chuột phải (`contextmenu`), phát hiện và đóng DevTools (`devtools`, `debugger`), hoặc tắt console (`console.log=`). Sự hiện diện của các đoạn mã này làm tăng mức nghi ngờ.
+
+**Thương hiệu bị nhắm tới:** Quét nội dung trang để tìm tên các thương hiệu hay bị giả mạo — từ PayPal, Binance, MetaMask cho đến Vietcombank, MoMo, ZaloPay. Nếu trang web không thuộc domain chính thức của thương hiệu đó nhưng lại chứa nội dung liên quan → đây là dấu hiệu impersonation.
+
+### Phát hiện Typosquatting
+
+Typosquatting là kỹ thuật đăng ký domain giống domain thật nhưng khác một vài ký tự. Ví dụ:
+- `paypa1.com` thay vì `paypal.com` (chữ `l` → số `1`)
+- `faceb00k.com` thay vì `facebook.com` (chữ `o` → số `0`)
+- `vietc0mbank.com` thay vì `vietcombank.com`
+
+Hệ thống phát hiện bằng 2 bước:
+1. **Chuẩn hóa homoglyph:** Thay thế các ký tự hay bị lạm dụng (`0`→`o`, `1`→`l`, `@`→`a`, v.v.) để lấy domain "thật" mà hacker muốn giả mạo
+2. **So sánh Levenshtein:** Tính khoảng cách chỉnh sửa giữa domain đã chuẩn hóa với danh sách thương hiệu. Nếu similarity ≥ 65% thì cảnh báo
+
+### Phân tích chứng chỉ SSL
+
+Các trang phishing thường có đặc điểm SSL rất khác biệt so với trang thật:
+- Chứng chỉ **mới toanh** (dưới 7 ngày) → domain vừa được tạo ra
+- Sử dụng nhà cấp **miễn phí** (Let's Encrypt, ZeroSSL) — không phải lỗi của nhà cấp, nhưng phishing lạm dụng chúng rất nhiều vì không cần xác minh danh tính
+- Chứng chỉ **tự ký** (self-signed) → cực kỳ đáng ngờ
+
+### WHOIS & Takedown
+
+Khi Risk Score ≥ 40, hệ thống:
+1. Truy vấn WHOIS để tìm nhà đăng ký tên miền (registrar), email tiếp nhận báo cáo lạm dụng (abuse contact), ngày đăng ký domain
+2. Tự động soạn một email takedown request bằng tiếng Anh chuẩn, kèm đầy đủ bằng chứng kỹ thuật (risk score, danh sách IoC, exfiltration endpoints) để gửi cho đội ngũ abuse của nhà mạng
+
+### Xuất dữ liệu có cấu trúc (JSON)
+
+Toàn bộ kết quả phân tích được xuất ra file `report.json` với verdict rõ ràng (`CLEAN`, `SUSPICIOUS`, `CONFIRMED_PHISHING`). File này có thể được import trực tiếp vào các hệ thống SIEM (Splunk, ELK) hoặc feed vào pipeline xử lý tự động của tổ chức.
 
 ---
 
-## 📦 Hướng dẫn Cài đặt & Vận hành
+## Sử dụng
 
-### Bước 1: Build Container
-Do Chromium yêu cầu nhiều thư viện hệ thống phức tạp, Dockerfile đã được cấu hình sẵn để cài đặt Chromium Headless chạy trong Debian Linux:
+### Quét 1 URL
 ```bash
-docker compose build
+docker compose run --rm scam-guardian https://suspicious-site.com
 ```
 
-### Bước 2: Chạy Phân tích Một trang web
-Chạy lệnh phân tích URL mục tiêu (thay thế URL bằng trang bạn muốn phân tích) và xuất kết quả ra thư mục `output` trên máy của bạn:
+### Quét hàng loạt từ file
 ```bash
-docker compose run --rm scam-guardian https://example-scam-site.com
+# urls.txt — mỗi dòng 1 URL
+docker compose run --rm scam-guardian --batch urls.txt
 ```
 
-### Bước 3: Nhận Kết quả Đầu ra
-Sau khi chạy xong, trong thư mục `./output` của bạn sẽ xuất hiện 2 file:
-1.  `screenshot.png`: Ảnh chụp màn hình trang web thực tế khi nó render trong sandbox.
-2.  `abuse_report.txt`: File chứa email báo cáo triệt phá soạn sẵn để bạn gửi cho nhà mạng.
+### Chạy như API server
+```bash
+docker compose run --rm -p 8080:8080 scam-guardian --serve :8080
+
+# Gọi API
+curl "http://localhost:8080/scan?url=https://suspicious-site.com"
+```
+
+### Kết quả đầu ra (thư mục `output/`)
+
+| File | Nội dung |
+|---|---|
+| `screenshot.png` | Ảnh chụp giao diện trang web thực tế |
+| `page_source.html` | Mã nguồn HTML sau khi JS đã render |
+| `report.json` | Báo cáo phân tích đầy đủ (JSON structured) |
+| `abuse_report.txt` | Email takedown soạn sẵn gửi nhà mạng |
+| `batch_results.json` | Tổng hợp kết quả khi quét hàng loạt |
+
+---
+
+## Yêu cầu
+
+- Docker
+- Hoặc Go 1.21+ và Chromium (nếu chạy trực tiếp)
+
+---
+
+## Cấu trúc mã nguồn
+
+```
+.
+├── main.go          # Entry point, sandbox browser, batch/API modes
+├── detector.go      # Heuristic engine phân tích DOM & form
+├── recon.go         # SSL inspection, typosquatting detection
+├── takedown.go      # WHOIS lookup, abuse report, JSON export
+├── Dockerfile       # Multi-stage build (Go builder → Debian slim)
+└── docker-compose.yml
+```
