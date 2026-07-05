@@ -1,6 +1,6 @@
 module scam-guardian
 
-go 1.21
+go 1.25.0
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20231011050154-1d073bb38998
@@ -17,6 +17,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/likexian/gokit v0.25.13 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	golang.org/x/net v0.17.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
