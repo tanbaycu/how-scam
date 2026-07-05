@@ -1,0 +1,32 @@
+{
+  "suspicious_binaries": [
+    "nc",
+    "netcat",
+    "socat",
+    "nmap",
+    "tcpdump",
+    "ncat",
+    "telnet",
+    "whoami",
+    "id"
+  ],
+  "suspicious_ports": [
+    4444,
+    9001,
+    1337,
+    6667
+  ],
+  "web_processes": [
+    "nginx",
+    "apache",
+    "httpd",
+    "www-data",
+    "node",
+    "python",
+    "php"
+  ],
+  "whitelisted_ips": [
+    "127.0.0.1",
+    "8.8.8.8"
+  ]
+}

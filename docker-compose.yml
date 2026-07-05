@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  kernel-guardian:
+    build: .
+    container_name: kernel-guardian
+    privileged: true
+    network_mode: "host"
+    pid: "host"
+    volumes:
+      - /sys:/sys
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
+    restart: unless-stopped
