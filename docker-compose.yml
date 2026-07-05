@@ -1,14 +1,10 @@
 version: '3.8'
 
 services:
-  kernel-guardian:
+  scam-guardian:
     build: .
-    container_name: kernel-guardian
-    privileged: true
-    network_mode: "host"
-    pid: "host"
+    container_name: scam-guardian
     volumes:
-      - /sys:/sys
-      - /lib/modules:/lib/modules:ro
-      - /usr/src:/usr/src:ro
-    restart: unless-stopped
+      - ./output:/app/output
+    # To run, execute: docker compose run --rm scam-guardian <target-url>
+    command: ["https://example.com"]

@@ -1,28 +1,19 @@
-# Use Go official Debian Bookworm image
 FROM golang:1.21-bookworm
 
-# Install build dependencies, clang, llvm, bpftool and kernel headers
+# Install Chromium and system libraries
 RUN apt-get update && apt-get install -y \
-    clang \
-    llvm \
-    bpftool \
-    libbpf-dev \
-    gcc-multilib \
-    linux-headers-generic \
-    dos2unix \
+    chromium \
+    chromium-driver \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy dependency files
 COPY go.mod ./
 RUN go mod download
 
-# Copy the rest of the source code
-COPY guardian.bpf.c main.go run.sh rules.json ./
+COPY main.go detector.go takedown.go ./
 
-# Fix line endings of run.sh in case the file was checked out or saved with CRLF on Windows
-RUN dos2unix run.sh && chmod +x run.sh
+RUN go build -o scam-guardian main.go detector.go takedown.go
 
-# Run the agent compiler and daemon
-ENTRYPOINT ["./run.sh"]
+ENTRYPOINT ["./scam-guardian"]

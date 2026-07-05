@@ -1,98 +1,74 @@
-# kernel-guardian (eBPF HIDS Agent)
+# scam-guardian (Automated Phishing Analysis & Takedown Sandbox)
 
-**kernel-guardian** là một Host Intrusion Detection System (HIDS) agent được xây dựng bằng công nghệ **eBPF (Extended Berkeley Packet Filter)** kết hợp với ngôn ngữ **Go**. 
+**scam-guardian** là một công cụ tự động phân tích và phản ứng nhanh trước các trang web lừa đảo (phishing/scam) bằng ngôn ngữ **Go**, điều khiển trình duyệt ẩn danh (**Headless Chrome**). 
 
 > [!NOTE]
-> Đây là dự án được xây dựng trong quá trình học tập và nghiên cứu về an ninh mạng, tập trung vào việc giám sát hành vi hệ thống ở mức nhân (kernel-space) để phát hiện mã độc, reverse shell và leo thang đặc quyền.
+> Đây là dự án được xây dựng trong quá trình học tập và nghiên cứu về chống tội phạm công nghệ cao, cụ thể là các hành vi lừa đảo trực tuyến (phishing) thu thập thông tin người dùng.
 
 ---
 
 ## 🛠️ Phân tích Chi tiết Cơ chế Hoạt động
 
-Hệ thống được chia thành 2 phần chính: **Kernel-space (Trình theo dõi mức nhân)** và **User-space (Trình xử lý mức ứng dụng)**. Chúng giao tiếp với nhau qua một kênh truyền tốc độ cao gọi là **BPF Ring Buffer**.
+Khi tội phạm mạng thiết lập các trang web lừa đảo, chúng thường triển khai nhiều kỹ thuật che giấu (như chặn User-Agent lạ, chỉ hiển thị form khi có tương tác người dùng, hoặc mã hóa mã nguồn JavaScript). Các script cào web thông thường (như Curl/Python requests) sẽ bị chặn hoặc không hiển thị được nội dung. **scam-guardian** giải quyết triệt để vấn đề này qua cơ chế sau:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Attacker
-    participant OS as Linux Kernel
-    participant eBPF as guardian.bpf.c (Kernel Space)
-    participant RingBuf as BPF Ring Buffer
-    participant Agent as main.go (User Space)
-
-    Attacker->>OS: Thực thi lệnh (e.g. nc -lvp 4444)
-    OS->>eBPF: Kích hoạt Tracepoint (sys_enter_execve)
-    Note over eBPF: Đọc thông tin PID, PPID, UID,<br/>Tên tiến trình & Đường dẫn file chạy
-    eBPF->>RingBuf: Đẩy cấu trúc event_t vào Buffer
-    RingBuf->>Agent: Nhận dữ liệu sự kiện (Event)
-    Note over Agent: Tra cứu cache tìm tiến trình cha,<br/>So khớp với luật trong rules.json
-    Agent->>Agent: Phát hiện port 4444 hoặc lệnh nc
-    Agent-->>System Log: [CRITICAL] Cảnh báo Reverse Shell!
+graph TD
+    Target[URL Nghi Ngờ] -->|Docker Sandbox| Chromedp[Headless Chrome Instance]
+    Chromedp -->|1. Render & Execute JS| DOM[Page Source & Forms]
+    Chromedp -->|2. Visual Snapshot| Screenshot[screenshot.png]
+    
+    DOM -->|3. Phân tích Dấu hiệu| Heuristic[Heuristic Detector]
+    Heuristic -->|Nhận diện Form OTP, Password, Card| RiskScore[Tính toán Risk Score]
+    
+    Target -->|4. Tra cứu WHOIS| Whois[Registry Database]
+    Whois -->|Lấy thông tin Nhà cung cấp & Abuse Email| Takedown[Takedown Engine]
+    
+    RiskScore -->|Kết hợp dữ liệu| Report[abuse_report.txt]
+    Takedown -->|Soạn thảo văn bản pháp lý| Report
+    
+    style Chromedp fill:#1e293b,stroke:#3b82f6,stroke-width:2px;
+    style Heuristic fill:#1e293b,stroke:#eab308,stroke-width:2px;
+    style Takedown fill:#1e293b,stroke:#ef4444,stroke-width:2px;
 ```
 
 ---
 
-## 🔍 Giải thích Từng Thành phần & Cơ chế
+## 🔍 Phân tích Cơ chế Từng Phần
 
-### 1. Phần nhân giám sát: `guardian.bpf.c` (Kernel Space)
-Đây là chương trình C được biên dịch thành bytecode eBPF và nạp trực tiếp vào Linux Kernel. Nó hoạt động bằng cách "hook" (móc) vào các sự kiện hệ thống:
+### 1. Trình duyệt Ẩn danh Cách ly (`main.go` - Chromedp Sandbox)
+*   **Cách thức:** Hệ thống khởi dựng một instance Chrome không giao diện (Headless) nằm hoàn toàn trong môi trường Docker cách ly (sandbox).
+*   **Bypass Detection:** Trình duyệt thực hiện truy cập trang web mục tiêu, thực thi toàn bộ mã nguồn JavaScript động, chờ trang web render xong trong 2 giây rồi mới bắt đầu bóc tách thông tin. Điều này giúp vượt qua các bộ lọc chống bot đơn giản của hacker.
+*   **Bằng chứng Số:** Tự động gọi lệnh chụp ảnh màn hình toàn trang (`chromedp.FullScreenshot`) để lưu lại giao diện lừa đảo làm bằng chứng pháp lý gửi cho nhà mạng.
 
-* **Móc nối Sự kiện Thực thi (`sys_enter_execve`):**
-  - Mỗi khi có bất kỳ tiến trình nào chạy một lệnh hoặc file thực thi mới (như chạy `ls`, `bash`, `nc`), Linux kernel kích hoạt tracepoint này.
-  - Chương trình eBPF sẽ đọc thông tin: **PID** (ID tiến trình), **UID** (ID người dùng chạy lệnh để biết có phải root không), **PPID** (ID của tiến trình cha sinh ra nó), tên lệnh (`comm`) và đường dẫn file được thực thi (`filename`).
-* **Móc nối Sự kiện Kết nối Mạng (`sys_enter_connect`):**
-  - Mọi hành vi tạo kết nối mạng đi ra ngoài (outbound socket connection) đều kích hoạt tracepoint này.
-  - eBPF sẽ đọc cấu trúc địa chỉ socket (`sockaddr_in`) để lấy **IP đích** và **Port đích** mà tiến trình đang muốn kết nối tới.
-* **Cơ chế Ring Buffer:**
-  - Vì code chạy trong nhân cần tốc độ cực nhanh để tránh làm chậm hệ điều hành, eBPF ghi nhận sự kiện rồi đẩy ngay vào một vùng nhớ chia sẻ chung gọi là **Ring Buffer**. User-space sẽ đọc từ đây ra. Cơ chế này không gây nghẽn và tốn rất ít tài nguyên.
+### 2. Bộ máy Phân tích Heuristic (`detector.go`)
+*   **Cơ chế:** Thay vì chỉ tìm các từ khóa tĩnh, hệ thống quét cấu trúc cây thư mục DOM của trang web để phát hiện:
+    *   **Form thu thập thông tin:** Tìm kiếm các thẻ `input` có thuộc tính nhạy cảm như mật khẩu (`password`), mã xác thực OTP (`otp`, `token`, `verification`), hay thẻ tín dụng (`card`, `cvv`, `ccnum`).
+    *   **Kỹ thuật tự bảo vệ của Hacker:** Quét các chuỗi script chặn nhấp chuột phải (`contextmenu`), chặn phím F12/Developer Tools (`devtools`, `debugger`, `preventdefault`) thường được hacker cài vào để ngăn người dùng thông thường xem mã nguồn hoặc phân tích trang.
+    *   **Thương hiệu bị nhắm tới:** Kiểm tra sự xuất hiện của các từ khóa thương hiệu lớn hay bị giả mạo (ví dụ: PayPal, MetaMask, Binance, các ngân hàng phổ biến).
+*   **Tính toán Điểm rủi ro:** Gán trọng số tương ứng cho từng dấu hiệu để cho ra điểm số rủi ro (`RiskScore`) từ 0 đến 100.
 
----
-
-### 2. Trình xử lý trung tâm: `main.go` (User Space)
-Đây là chương trình viết bằng Go chạy ở môi trường người dùng thông thường để điều khiển và phân tích:
-
-* **Nạp Bytecode vào Kernel:**
-  - Khi khởi động, Go sử dụng thư viện `cilium/ebpf` để giao tiếp với hệ điều hành, yêu cầu cấp quyền và nạp bytecode đã biên dịch từ `guardian.bpf.c` vào các Tracepoint tương ứng của nhân Linux.
-* **Cây tiến trình động (Process Lineage Tracking):**
-  - Thông thường, Kernel chỉ trả về số PID và PPID vô hồn. Agent Go giải quyết bằng cách duy trì một bộ nhớ đệm (cache map). 
-  - Mỗi khi có một tiến trình mới chạy, Agent ghi nhận `PID -> Tên tiến trình`. Khi tiến trình con chạy tiếp theo, Agent tra ngược `PPID` trong cache để tìm ra tên của tiến trình cha.
-  - Kết quả hiển thị trực quan: `[nginx (PID: 100) -> sh (PID: 101)]` giúp bạn thấy ngay ai là thủ phạm sinh ra shell.
-* **Bộ luật Phân tích động (`rules.json`):**
-  - Agent đọc danh sách các cổng kết nối nhạy cảm (như `4444`, `9001` - thường là reverse shell) và các công cụ đáng ngờ (như `nc`, `nmap`).
-  - Nếu phát hiện tiến trình thuộc nhóm Web Server (như `nginx`, `apache`) sinh ra tiến trình con là một shell (`sh`, `bash`), hệ thống ngay lập tức kích hoạt cảnh báo **CRITICAL** vì đây là dấu hiệu điển hình của lỗ hổng RCE (Remote Code Execution) hoặc Web Shell.
+### 3. Tra cứu Pháp lý & Takedown (`takedown.go`)
+*   **Cơ chế:** Trích xuất tên miền gốc (Domain) của URL lừa đảo, sau đó thực hiện truy vấn WHOIS trực tiếp tới các máy chủ Registry toàn cầu.
+*   **Trích xuất Abuse Contact:** Phân tích dữ liệu WHOIS trả về để tìm ra nhà cung cấp tên miền (Registrar) và Email tiếp nhận báo cáo lạm dụng (`Abuse Email`) của họ.
+*   **Soạn thảo Báo cáo Tự động:** Nếu trang web có mức độ rủi ro cao (Risk Score >= 40), hệ thống tự động sinh ra một email báo cáo triệt phá (Abuse Report) chuyên nghiệp bằng tiếng Anh chứa đầy đủ bằng chứng kỹ thuật, các lỗ hổng phát hiện được và yêu cầu nhà mạng khóa ngay lập tức trang web đó.
 
 ---
 
-### 3. Tự động hóa Môi trường: `run.sh` & `Dockerfile`
-Biên dịch eBPF truyền thống rất phức tạp do phụ thuộc vào phiên bản nhân Linux cụ thể (Kernel Headers). Dự án giải quyết triệt để bằng cơ chế biên dịch động:
-
-* **Tự sinh `vmlinux.h`:** 
-  - Khi container Docker khởi chạy, script `run.sh` dùng công cụ `bpftool` để kết xuất (dump) toàn bộ cấu trúc dữ liệu của nhân hệ điều hành đang chạy thành file header `vmlinux.h`. Điều này đảm bảo code eBPF biên dịch ra tương thích tuyệt đối với máy của bạn.
-* **Biên dịch tại chỗ (On-the-fly Compilation):**
-  - Sau khi có `vmlinux.h`, script tự chạy `go generate` (gọi clang để biên dịch file C thành ELF bytecode) và `go build` để ra file thực thi hoàn chỉnh trong vòng 3 giây trước khi chạy.
-
----
-
-## ⚙️ Hướng dẫn Chạy Thử nghiệm
+## 📦 Hướng dẫn Cài đặt & Vận hành
 
 ### Bước 1: Build Container
-Cài đặt môi trường và các công cụ biên dịch tự động:
+Do Chromium yêu cầu nhiều thư viện hệ thống phức tạp, Dockerfile đã được cấu hình sẵn để cài đặt Chromium Headless chạy trong Debian Linux:
 ```bash
 docker compose build
 ```
 
-### Bước 2: Chạy Agent Giám sát
-Chạy container với quyền privileged để nạp code vào nhân:
+### Bước 2: Chạy Phân tích Một trang web
+Chạy lệnh phân tích URL mục tiêu (thay thế URL bằng trang bạn muốn phân tích) và xuất kết quả ra thư mục `output` trên máy của bạn:
 ```bash
-docker compose up
+docker compose run --rm scam-guardian https://example-scam-site.com
 ```
 
-### Bước 3: Chạy giả lập tấn công (Mở terminal khác trên máy host)
-Cấp quyền và chạy script test giả lập:
-```bash
-chmod +x test_exploit.sh
-./test_exploit.sh
-```
-
-### Bước 4: Kiểm tra kết quả
-Quan sát log hiển thị ở terminal chạy Agent để thấy cơ chế phát hiện hoạt động thời gian thực.
+### Bước 3: Nhận Kết quả Đầu ra
+Sau khi chạy xong, trong thư mục `./output` của bạn sẽ xuất hiện 2 file:
+1.  `screenshot.png`: Ảnh chụp màn hình trang web thực tế khi nó render trong sandbox.
+2.  `abuse_report.txt`: File chứa email báo cáo triệt phá soạn sẵn để bạn gửi cho nhà mạng.
